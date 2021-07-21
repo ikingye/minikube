@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -37,6 +38,9 @@ var (
 
 	// OutPrefix notes output
 	OutPrefix = "> "
+
+	// Mutex protects teePrefix from writing to same log buffer parallelly
+	logMutex = &sync.Mutex{}
 )
 
 // RunResult holds the results of a Runner
@@ -47,11 +51,26 @@ type RunResult struct {
 	Args     []string // the args that was passed to Runner
 }
 
+// StartedCmd holds the contents of a started command
+type StartedCmd struct {
+	cmd *exec.Cmd
+	rr  *RunResult
+	wg  *sync.WaitGroup
+}
+
 // Runner represents an interface to run commands.
 type Runner interface {
 	// RunCmd runs a cmd of exec.Cmd type. allowing user to set cmd.Stdin, cmd.Stdout,...
 	// not all implementors are guaranteed to handle all the properties of cmd.
 	RunCmd(cmd *exec.Cmd) (*RunResult, error)
+
+	// StartCmd starts a cmd of exec.Cmd type.
+	// This func in non-blocking, use WaitCmd to block until complete.
+	// Not all implementors are guaranteed to handle all the properties of cmd.
+	StartCmd(cmd *exec.Cmd) (*StartedCmd, error)
+
+	// WaitCmd will prevent further execution until the started command has completed.
+	WaitCmd(startedCmd *StartedCmd) (*RunResult, error)
 
 	// Copy is a convenience method that runs a command to copy a file
 	Copy(assets.CopyableFile) error
@@ -88,6 +107,9 @@ func (rr RunResult) Output() string {
 
 // teePrefix copies bytes from a reader to writer, logging each new line.
 func teePrefix(prefix string, r io.Reader, w io.Writer, logger func(format string, args ...interface{})) error {
+	logMutex.Lock()
+	defer logMutex.Unlock()
+
 	scanner := bufio.NewScanner(r)
 	scanner.Split(bufio.ScanBytes)
 	var line bytes.Buffer

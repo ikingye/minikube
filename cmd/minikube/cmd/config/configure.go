@@ -19,21 +19,26 @@ package config
 import (
 	"io/ioutil"
 	"net"
+	"regexp"
 
 	"github.com/spf13/cobra"
+	"k8s.io/minikube/pkg/addons"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/exit"
+	"k8s.io/minikube/pkg/minikube/mustload"
 	"k8s.io/minikube/pkg/minikube/out"
+	"k8s.io/minikube/pkg/minikube/reason"
 	"k8s.io/minikube/pkg/minikube/service"
+	"k8s.io/minikube/pkg/minikube/style"
 )
 
 var addonsConfigureCmd = &cobra.Command{
 	Use:   "configure ADDON_NAME",
-	Short: "Configures the addon w/ADDON_NAME within minikube (example: minikube addons configure registry-creds). For a list of available addons use: minikube addons list ",
-	Long:  "Configures the addon w/ADDON_NAME within minikube (example: minikube addons configure registry-creds). For a list of available addons use: minikube addons list ",
+	Short: "Configures the addon w/ADDON_NAME within minikube (example: minikube addons configure registry-creds). For a list of available addons use: minikube addons list",
+	Long:  "Configures the addon w/ADDON_NAME within minikube (example: minikube addons configure registry-creds). For a list of available addons use: minikube addons list",
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) != 1 {
-			exit.UsageT("usage: minikube addons configure ADDON_NAME")
+			exit.Message(reason.Usage, "usage: minikube addons configure ADDON_NAME")
 		}
 
 		addon := args[0]
@@ -103,11 +108,12 @@ var addonsConfigureCmd = &cobra.Command{
 			}
 
 			cname := ClusterFlagValue()
+			namespace := "kube-system"
 
 			// Create ECR Secret
 			err := service.CreateSecret(
 				cname,
-				"kube-system",
+				namespace,
 				"registry-creds-ecr",
 				map[string]string{
 					"AWS_ACCESS_KEY_ID":     awsAccessID,
@@ -122,7 +128,6 @@ var addonsConfigureCmd = &cobra.Command{
 					"cloud":                         "ecr",
 					"kubernetes.io/minikube-addons": "registry-creds",
 				})
-
 			if err != nil {
 				out.FailureT("ERROR creating `registry-creds-ecr` secret: {{.error}}", out.V{"error": err})
 			}
@@ -130,7 +135,7 @@ var addonsConfigureCmd = &cobra.Command{
 			// Create GCR Secret
 			err = service.CreateSecret(
 				cname,
-				"kube-system",
+				namespace,
 				"registry-creds-gcr",
 				map[string]string{
 					"application_default_credentials.json": gcrApplicationDefaultCredentials,
@@ -149,7 +154,7 @@ var addonsConfigureCmd = &cobra.Command{
 			// Create Docker Secret
 			err = service.CreateSecret(
 				cname,
-				"kube-system",
+				namespace,
 				"registry-creds-dpr",
 				map[string]string{
 					"DOCKER_PRIVATE_REGISTRY_SERVER":   dockerServer,
@@ -169,7 +174,7 @@ var addonsConfigureCmd = &cobra.Command{
 			// Create Azure Container Registry Secret
 			err = service.CreateSecret(
 				cname,
-				"kube-system",
+				namespace,
 				"registry-creds-acr",
 				map[string]string{
 					"ACR_URL":       acrURL,
@@ -188,10 +193,7 @@ var addonsConfigureCmd = &cobra.Command{
 
 		case "metallb":
 			profile := ClusterFlagValue()
-			cfg, err := config.Load(profile)
-			if err != nil {
-				out.ErrT(out.FatalType, "Failed to load config {{.profile}}", out.V{"profile": profile})
-			}
+			_, cfg := mustload.Partial(profile)
 
 			validator := func(s string) bool {
 				return net.ParseIP(s) != nil
@@ -205,9 +207,29 @@ var addonsConfigureCmd = &cobra.Command{
 				cfg.KubernetesConfig.LoadBalancerEndIP = AskForStaticValidatedValue("-- Enter Load Balancer End IP: ", validator)
 			}
 
-			err = config.SaveProfile(profile, cfg)
-			if err != nil {
-				out.ErrT(out.FatalType, "Failed to save config {{.profile}}", out.V{"profile": profile})
+			if err := config.SaveProfile(profile, cfg); err != nil {
+				out.ErrT(style.Fatal, "Failed to save config {{.profile}}", out.V{"profile": profile})
+			}
+
+			// Re-enable metallb addon in order to generate template manifest files with Load Balancer Start/End IP
+			if err := addons.EnableOrDisableAddon(cfg, "metallb", "true"); err != nil {
+				out.ErrT(style.Fatal, "Failed to configure metallb IP {{.profile}}", out.V{"profile": profile})
+			}
+		case "ingress":
+			profile := ClusterFlagValue()
+			_, cfg := mustload.Partial(profile)
+
+			validator := func(s string) bool {
+				format := regexp.MustCompile("^.+/.+$")
+				return format.MatchString(s)
+			}
+
+			if cfg.KubernetesConfig.CustomIngressCert == "" {
+				cfg.KubernetesConfig.CustomIngressCert = AskForStaticValidatedValue("-- Enter custom cert(format is \"namespace/secret\"): ", validator)
+			}
+
+			if err := config.SaveProfile(profile, cfg); err != nil {
+				out.ErrT(style.Fatal, "Failed to save config {{.profile}}", out.V{"profile": profile})
 			}
 
 		default:

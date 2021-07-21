@@ -92,6 +92,9 @@ github_subdir = "site"
 # enabling local search https://www.docsy.dev/docs/adding-content/navigation/#configure-local-search-with-lunr
 offlineSearch = true
 
+# Enable syntax highlighting and copy buttons on code blocks with Prism
+prism_syntax_highlighting = true
+
 # User interface configuration
 [params.ui]
 # Enable to show the side bar menu in its compact state.
@@ -126,6 +129,13 @@ no = 'Sorry to hear that. Please <a href="https://github.com/kubernetes/minikube
 	icon = "fas fa-envelope"
 	desc = "Interact with the minikube users here"
 
+[[params.links.user]]
+	name = "twitter"
+	url = "https://twitter.com/minikube_dev"
+	icon = "fab fa-twitter"
+	desc = "Follow minikube's official twitter for news/releases"
+
+
 # Developer relevant links. These will show up on right side of footer and in the community page if you have one.
 [[params.links.developer]]
 	name = "GitHub"
@@ -159,6 +169,11 @@ no = 'Sorry to hear that. Please <a href="https://github.com/kubernetes/minikube
 	url = "https://minikube.sigs.k8s.io/docs/contrib/triage/"
 	icon = "fas fa-comments"
 	desc = "All community members are welcome and encouraged to join and help us triage minikube!"
+[[params.links.meetings]]
+	name = "Kanban board"
+	url = "http://tinyurl.com/minikube-kanban"
+	icon = "fas fa-comments"
+	desc = "Kanban visualization of the next milestone"
 
 
 # Related pages - does not appear to work yet

@@ -1,5 +1,5 @@
 ---
-title: "Using Multi-Node Clusters (Experimental)"
+title: "Using Multi-Node Clusters"
 linkTitle: "Using multi-node clusters"
 weight: 1
 date: 2019-11-24
@@ -11,41 +11,58 @@ date: 2019-11-24
 
 ## Prerequisites
 
-- minikube 1.9.0 or higher
+- minikube 1.10.1 or higher
 - kubectl
 
 ## Tutorial
 
-- Start a cluster with 2 nodes in the driver of your choice (the extra parameters are to make our chosen CNI, flannel, work while we're still experimental):
+- Start a cluster with 2 nodes in the driver of your choice:
+
+```shell
+minikube start --nodes 2 -p multinode-demo
 ```
-minikube start --nodes 2 -p multinode-demo --network-plugin=cni --extra-config=kubeadm.pod-network-cidr=10.244.0.0/16
-😄  [multinode-demo] minikube v1.9.2 on Darwin 10.14.6
-✨  Automatically selected the hyperkit driver
+```
+😄  [multinode-demo] minikube v1.18.1 on Opensuse-Tumbleweed 
+✨  Automatically selected the docker driver
 👍  Starting control plane node multinode-demo in cluster multinode-demo
-🔥  Creating hyperkit VM (CPUs=2, Memory=4000MB, Disk=20000MB) ...
-🐳  Preparing Kubernetes v1.18.0 on Docker 19.03.8 ...
-    ▪ kubeadm.pod-network-cidr=10.244.0.0/16
-🌟  Enabling addons: default-storageclass, storage-provisioner
+🔥  Creating docker container (CPUs=2, Memory=8000MB) ...
+🐳  Preparing Kubernetes v1.20.2 on Docker 20.10.3 ...
+    ▪ Generating certificates and keys ...
+    ▪ Booting up control plane ...
+    ▪ Configuring RBAC rules ...
+🔗  Configuring CNI (Container Networking Interface) ...
+🔎  Verifying Kubernetes components...
+    ▪ Using image gcr.io/k8s-minikube/storage-provisioner:v5
+🌟  Enabled addons: storage-provisioner, default-storageclass
 
 👍  Starting node multinode-demo-m02 in cluster multinode-demo
-🔥  Creating hyperkit VM (CPUs=2, Memory=4000MB, Disk=20000MB) ...
+🔥  Creating docker container (CPUs=2, Memory=8000MB) ...
 🌐  Found network options:
-    ▪ NO_PROXY=192.168.64.213
-🐳  Preparing Kubernetes v1.18.0 on Docker 19.03.8 ...
-🏄  Done! kubectl is now configured to use "multinode-demo"
+    ▪ NO_PROXY=192.168.49.2
+🐳  Preparing Kubernetes v1.20.2 on Docker 20.10.3 ...
+    ▪ env NO_PROXY=192.168.49.2
+🔎  Verifying Kubernetes components...
+🏄  Done! kubectl is now configured to use "multinode-demo" cluster and "default" namespace by default
 ```
 
 - Get the list of your nodes:
-```
+
+```shell
 kubectl get nodes
-NAME                 STATUS   ROLES    AGE     VERSION
-multinode-demo       Ready    master   9m58s   v1.18.0
-multinode-demo-m02   Ready    <none>   9m5s    v1.18.0
+```
+```
+NAME                 STATUS   ROLES                  AGE   VERSION
+multinode-demo       Ready    control-plane,master   99s   v1.20.2
+multinode-demo-m02   Ready    <none>                 73s   v1.20.2
 ```
 
-NOTE: You can also check the status of your nodes:
+- You can also check the status of your nodes:
+
+```shell
+minikube status -p multinode-demo
 ```
-$ minikube status
+
+```
 multinode-demo
 type: Control Plane
 host: Running
@@ -59,86 +76,80 @@ host: Running
 kubelet: Running
 ```
 
-- Install a CNI (e.g. flannel):
-NOTE: This currently needs to be done manually after the apiserver is running, the multi-node feature is still experimental as of 1.9.2.
-```
-kubectl apply -f kube-flannel.yaml
-podsecuritypolicy.policy/psp.flannel.unprivileged created
-clusterrole.rbac.authorization.k8s.io/flannel created
-clusterrolebinding.rbac.authorization.k8s.io/flannel created
-serviceaccount/flannel created
-configmap/kube-flannel-cfg created
-daemonset.apps/kube-flannel-ds-amd64 created
-daemonset.apps/kube-flannel-ds-arm64 created
-daemonset.apps/kube-flannel-ds-arm created
-daemonset.apps/kube-flannel-ds-ppc64le created
-daemonset.apps/kube-flannel-ds-s390x created
-```
-
 - Deploy our hello world deployment:
-```
-kubectl apply -f hello-deployment.yaml
-deployment.apps/hello created
 
+```shell
+kubectl apply -f hello-deployment.yaml
+```
+```
+deployment.apps/hello created
+```
+```shell
 kubectl rollout status deployment/hello
+```
+```
 deployment "hello" successfully rolled out
 ```
 
-
 - Deploy our hello world service, which just spits back the IP address the request was served from:
-{{% readfile file="/docs/tutorials/includes/hello-svc.yaml" %}}
+
+```shell
+kubectl apply -f hello-svc.yaml
 ```
-kubectl apply -f hello-svc.yml
+```
 service/hello created
 ```
 
-
 - Check out the IP addresses of our pods, to note for future reference
-```
+
+```shell
 kubectl get pods -o wide
-NAME                    READY   STATUS    RESTARTS   AGE   IP           NODE             NOMINATED NODE   READINESS GATES
-hello-c7b8df44f-qbhxh   1/1     Running   0          31s   10.244.0.3   multinode-demo   <none>           <none>
-hello-c7b8df44f-xv4v6   1/1     Running   0          31s   10.244.0.2   multinode-demo   <none>           <none>
+```
+```
+NAME                     READY   STATUS    RESTARTS   AGE   IP           NODE                 NOMINATED NODE   READINESS GATES
+hello-695c67cf9c-bzrzk   1/1     Running   0          22s   10.244.1.2   multinode-demo-m02   <none>           <none>
+hello-695c67cf9c-frcvw   1/1     Running   0          22s   10.244.0.3   multinode-demo       <none>           <none>
 ```
 
 - Look at our service, to know what URL to hit
+
+```shell
+minikube service list -p multinode-demo
 ```
-minikube service list
-|-------------|------------|--------------|-----------------------------|
-|  NAMESPACE  |    NAME    | TARGET PORT  |             URL             |
-|-------------|------------|--------------|-----------------------------|
-| default     | hello      |           80 | http://192.168.64.226:31000 |
-| default     | kubernetes | No node port |                             |
-| kube-system | kube-dns   | No node port |                             |
-|-------------|------------|--------------|-----------------------------|
+```
+|-------------|------------|--------------|---------------------------|
+|  NAMESPACE  |    NAME    | TARGET PORT  |            URL            |
+|-------------|------------|--------------|---------------------------|
+| default     | hello      |           80 | http://192.168.49.2:31000 |
+| default     | kubernetes | No node port |                           |
+| kube-system | kube-dns   | No node port |                           |
+|-------------|------------|--------------|---------------------------|
 ```
 
 - Let's hit the URL a few times and see what comes back
+
+```shell
+curl  http://192.168.49.2:31000
 ```
-curl  http://192.168.64.226:31000
-Hello from hello-c7b8df44f-qbhxh (10.244.0.3)
+```
+Hello from hello-695c67cf9c-frcvw (10.244.0.3)
 
-curl  http://192.168.64.226:31000
-Hello from hello-c7b8df44f-qbhxh (10.244.0.3)
+curl  http://192.168.49.2:31000
+Hello from hello-695c67cf9c-bzrzk (10.244.1.2)
 
-curl  http://192.168.64.226:31000
-Hello from hello-c7b8df44f-xv4v6 (10.244.0.2)
+curl  http://192.168.49.2:31000
+Hello from hello-695c67cf9c-bzrzk (10.244.1.2)
 
-curl  http://192.168.64.226:31000
-Hello from hello-c7b8df44f-xv4v6 (10.244.0.2)
+curl  http://192.168.49.2:31000
+Hello from hello-695c67cf9c-frcvw (10.244.0.3)
 ```
 
 - Multiple nodes!
 
-
 - Referenced YAML files
 {{% tabs %}}
-{{% tab kube-flannel.yaml %}}
-```
-{{% readfile file="/docs/tutorials/includes/kube-flannel.yaml" %}}
-```
-{{% /tab %}}
 {{% tab hello-deployment.yaml %}}
+
 ```
 {{% readfile file="/docs/tutorials/includes/hello-deployment.yaml" %}}
 ```
