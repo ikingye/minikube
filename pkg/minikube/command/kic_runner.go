@@ -18,9 +18,9 @@ package command
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
@@ -29,11 +29,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/glog"
-	"github.com/pkg/errors"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
+	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
 	"k8s.io/minikube/pkg/minikube/assets"
+	"k8s.io/minikube/pkg/minikube/detect"
 )
 
 // kicRunner runs commands inside a container
@@ -43,11 +43,11 @@ type kicRunner struct {
 	ociBin   string
 }
 
-// NewKICRunner returns a kicRunner implementor of runner which runs cmds inside a container
-func NewKICRunner(containerNameOrID string, oci string) Runner {
+// NewKICRunner returns a kicRunner implementer of runner which runs cmds inside a container
+func NewKICRunner(containerNameOrID string, ociName string) Runner {
 	return &kicRunner{
 		nameOrID: containerNameOrID,
-		ociBin:   oci, // docker or podman
+		ociBin:   ociName, // docker or podman
 	}
 }
 
@@ -90,7 +90,7 @@ func (k *kicRunner) RunCmd(cmd *exec.Cmd) (*RunResult, error) {
 	oc.Env = cmd.Env
 
 	rr := &RunResult{Args: cmd.Args}
-	glog.Infof("Run: %v", rr.Command())
+	klog.Infof("Run: %v", rr.Command())
 
 	var outb, errb io.Writer
 	if oc.Stdout == nil {
@@ -111,7 +111,7 @@ func (k *kicRunner) RunCmd(cmd *exec.Cmd) (*RunResult, error) {
 	oc.Stderr = errb
 
 	oc = oci.PrefixCmd(oc)
-	glog.Infof("Args: %v", oc.Args)
+	klog.Infof("Args: %v", oc.Args)
 
 	start := time.Now()
 
@@ -120,15 +120,25 @@ func (k *kicRunner) RunCmd(cmd *exec.Cmd) (*RunResult, error) {
 	if err == nil {
 		// Reduce log spam
 		if elapsed > (1 * time.Second) {
-			glog.Infof("Done: %v: (%s)", oc.Args, elapsed)
+			klog.Infof("Done: %v: (%s)", oc.Args, elapsed)
 		}
 		return rr, nil
 	}
-	if exitError, ok := err.(*exec.ExitError); ok {
-		rr.ExitCode = exitError.ExitCode()
-	}
+	rr.ExitCode = k.exitCode(err)
 	return rr, fmt.Errorf("%s: %v\nstdout:\n%s\nstderr:\n%s", rr.Command(), err, rr.Stdout.String(), rr.Stderr.String())
 
+}
+
+func (k *kicRunner) StartCmd(_ *exec.Cmd) (*StartedCmd, error) {
+	return nil, errors.New("kicRunner does not support StartCmd - you could be the first to add it")
+}
+
+func (k *kicRunner) WaitCmd(_ *StartedCmd) (*RunResult, error) {
+	return nil, errors.New("kicRunner does not support WaitCmd - you could be the first to add it")
+}
+
+func (k *kicRunner) ReadableFile(_ string) (assets.ReadableFile, error) {
+	return nil, errors.New("kicRunner does not support ReadableFile - you could be the first to add it")
 }
 
 // Copy copies a file and its permissions
@@ -139,22 +149,22 @@ func (k *kicRunner) Copy(f assets.CopyableFile) error {
 	if f.GetLength() > 4096 {
 		exists, err := fileExists(k, f, dst)
 		if err != nil {
-			glog.Infof("existence error for %s: %v", dst, err)
+			klog.Infof("existence error for %s: %v", dst, err)
 		}
 		if exists {
-			glog.Infof("copy: skipping %s (exists)", dst)
+			klog.Infof("copy: skipping %s (exists)", dst)
 			return nil
 		}
 	}
 
 	src := f.GetSourcePath()
 	if f.GetLength() == 0 {
-		glog.Warningf("0 byte asset: %+v", f)
+		klog.Warningf("0 byte asset: %+v", f)
 	}
 
 	perms, err := strconv.ParseInt(f.GetPermissions(), 8, 0)
-	if err != nil {
-		return errors.Wrapf(err, "error converting permissions %s to integer", f.GetPermissions())
+	if err != nil || perms > 07777 {
+		return fmt.Errorf("error converting permissions %s to integer: %w", f.GetPermissions(), err)
 	}
 
 	if src != assets.MemorySource {
@@ -162,13 +172,13 @@ func (k *kicRunner) Copy(f assets.CopyableFile) error {
 		fi, err := os.Stat(src)
 		if err == nil {
 			if fi.Mode() == os.FileMode(perms) {
-				glog.Infof("%s (direct): %s --> %s (%d bytes)", k.ociBin, src, dst, f.GetLength())
+				klog.Infof("%s (direct): %s --> %s (%d bytes)", k.ociBin, src, dst, f.GetLength())
 				return k.copy(src, dst)
 			}
 
 			// If >1MB, avoid local copy
 			if fi.Size() > (1024 * 1024) {
-				glog.Infof("%s (chmod): %s --> %s (%d bytes)", k.ociBin, src, dst, f.GetLength())
+				klog.Infof("%s (chmod): %s --> %s (%d bytes)", k.ociBin, src, dst, f.GetLength())
 				if err := k.copy(src, dst); err != nil {
 					return err
 				}
@@ -176,17 +186,50 @@ func (k *kicRunner) Copy(f assets.CopyableFile) error {
 			}
 		}
 	}
-	glog.Infof("%s (temp): %s --> %s (%d bytes)", k.ociBin, src, dst, f.GetLength())
-	tf, err := ioutil.TempFile("", "tmpf-memory-asset")
+	klog.Infof("%s (temp): %s --> %s (%d bytes)", k.ociBin, src, dst, f.GetLength())
+
+	tmpFolder, err := tempDirectory(detect.MinikubeInstalledViaSnap(), detect.DockerInstalledViaSnap())
 	if err != nil {
-		return errors.Wrap(err, "creating temporary file")
+		return fmt.Errorf("determining temp directory: %w", err)
 	}
+
+	tf, err := os.CreateTemp(tmpFolder, "tmpf-memory-asset")
+	if err != nil {
+		return fmt.Errorf("creating temporary file: %w", err)
+	}
+	defer tf.Close()
 	defer os.Remove(tf.Name())
 
 	if err := writeFile(tf.Name(), f, os.FileMode(perms)); err != nil {
-		return errors.Wrap(err, "write")
+		return fmt.Errorf("write: %w", err)
 	}
 	return k.copy(tf.Name(), dst)
+}
+
+// CopyFrom copies a file
+func (k *kicRunner) CopyFrom(f assets.CopyableFile) error {
+	src := f.GetTargetPath()
+	dst := f.GetSourcePath()
+
+	klog.Infof("%s (direct): %s --> %s", k.ociBin, src, dst)
+	return k.copyFrom(src, dst)
+}
+
+// tempDirectory returns the directory to use as the temp directory
+// or an empty string if it should use the os default temp directory.
+func tempDirectory(isMinikubeSnap bool, isDockerSnap bool) (string, error) {
+	if !isMinikubeSnap && !isDockerSnap {
+		return "", nil
+	}
+
+	// Snap only allows an application to see its own files in /tmp, making Docker unable to copy memory assets
+	// https://github.com/kubernetes/minikube/issues/10020
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("detecting home dir: %w", err)
+	}
+	return home, nil
 }
 
 func (k *kicRunner) copy(src string, dst string) error {
@@ -195,6 +238,14 @@ func (k *kicRunner) copy(src string, dst string) error {
 		return copyToPodman(src, fullDest)
 	}
 	return copyToDocker(src, fullDest)
+}
+
+func (k *kicRunner) copyFrom(src string, dst string) error {
+	fullSource := fmt.Sprintf("%s:%s", k.nameOrID, src)
+	if k.ociBin == oci.Podman {
+		return copyToPodman(fullSource, dst)
+	}
+	return copyToDocker(fullSource, dst)
 }
 
 func (k *kicRunner) chmod(dst string, perm string) error {
@@ -206,9 +257,9 @@ func (k *kicRunner) chmod(dst string, perm string) error {
 func copyToPodman(src string, dest string) error {
 	if runtime.GOOS == "linux" {
 		cmd := oci.PrefixCmd(exec.Command(oci.Podman, "cp", src, dest))
-		glog.Infof("Run: %v", cmd)
+		klog.Infof("Run: %v", cmd)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return errors.Wrapf(err, "podman copy %s into %s, output: %s", src, dest, string(out))
+			return fmt.Errorf("podman copy %s into %s, output: %s: %w", src, dest, string(out), err)
 		}
 	} else {
 		file, err := os.Open(src)
@@ -218,12 +269,12 @@ func copyToPodman(src string, dest string) error {
 		defer file.Close()
 		parts := strings.Split(dest, ":")
 		container := parts[0]
-		path := parts[1]
-		cmd := exec.Command(oci.Podman, "exec", "-i", container, "tee", path)
+		containerPath := parts[1]
+		cmd := exec.Command(oci.Podman, "exec", "-i", container, "tee", containerPath)
 		cmd.Stdin = file
-		glog.Infof("Run: %v", cmd)
+		klog.Infof("Run: %v", cmd)
 		if err := cmd.Run(); err != nil {
-			return errors.Wrapf(err, "podman copy %s into %s", src, dest)
+			return fmt.Errorf("podman copy %s into %s: %w", src, dest, err)
 		}
 	}
 	return nil
@@ -231,7 +282,7 @@ func copyToPodman(src string, dest string) error {
 
 func copyToDocker(src string, dest string) error {
 	if out, err := oci.PrefixCmd(exec.Command(oci.Docker, "cp", "-a", src, dest)).CombinedOutput(); err != nil {
-		return errors.Wrapf(err, "docker copy %s into %s, output: %s", src, dest, string(out))
+		return fmt.Errorf("docker copy %s into %s, output: %s: %w", src, dest, string(out), err)
 	}
 	return nil
 }
@@ -239,16 +290,28 @@ func copyToDocker(src string, dest string) error {
 // Remove removes a file
 func (k *kicRunner) Remove(f assets.CopyableFile) error {
 	dst := path.Join(f.GetTargetDir(), f.GetTargetName())
-	glog.Infof("rm: %s", dst)
+	klog.Infof("rm: %s", dst)
 
 	_, err := k.RunCmd(exec.Command("sudo", "rm", dst))
 	return err
 }
 
+// exitCode extracts the exit code from an exec error.
+// docker/podman exec propagates the container's exit code (including
+// 127 for missing binaries) as the process exit code, so
+// *exec.ExitError is sufficient — no special handling needed unlike
+// execRunner.
+func (*kicRunner) exitCode(err error) int {
+	if exitError, ok := err.(*exec.ExitError); ok {
+		return exitError.ExitCode()
+	}
+	return 0
+}
+
 // isTerminal returns true if the writer w is a terminal
 func isTerminal(w io.Writer) bool {
 	if v, ok := (w).(*os.File); ok {
-		return terminal.IsTerminal(int(v.Fd()))
+		return term.IsTerminal(int(v.Fd()))
 	}
 	return false
 }

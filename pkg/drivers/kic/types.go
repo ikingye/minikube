@@ -24,25 +24,34 @@ import (
 
 const (
 	// Version is the current version of kic
-	Version = "v0.0.10"
+	Version = "v0.0.51-1794391316-24028"
+
 	// SHA of the kic base image
-	baseImageSHA = "f58e0c4662bac8a9b5dda7984b185bad8502ade5d9fa364bf2755d636ab51438"
-	// OverlayImage is the cni plugin used for overlay image, created by kind.
-	// CNI plugin image used for kic drivers created by kind.
-	OverlayImage = "kindest/kindnetd:0.5.4"
+	baseImageSHA = "08e052df8230c8ab920e51621e8a0b396c99f5eeb54cc0d7d0f725f5cdb148fc"
+	// The name of the GCR kicbase repository
+	gcrRepo = "docker.io/kicbase/build"
+	// The name of the Dockerhub kicbase repository
+	dockerhubRepo = "docker.io/kicbase/build"
 )
 
 var (
 	// BaseImage is the base image is used to spin up kic containers. it uses same base-image as kind.
-	BaseImage = fmt.Sprintf("gcr.io/k8s-minikube/kicbase:%s@sha256:%s", Version, baseImageSHA)
-	// BaseImageFallBack the fall back of BaseImage in case gcr.io is not available. stored in github packages https://github.com/kubernetes/minikube/packages/206071
-	// github packages docker does _NOT_ support pulling by sha as mentioned in the docs:
-	// https://help.github.com/en/packages/using-github-packages-with-your-projects-ecosystem/configuring-docker-for-use-with-github-packages
-	BaseImageFallBack = fmt.Sprintf("docker.pkg.github.com/kubernetes/minikube/kicbase:%s", Version)
+	BaseImage = fmt.Sprintf("%s:%s@sha256:%s", gcrRepo, Version, baseImageSHA)
+
+	// FallbackImages are backup base images in case gcr isn't available
+	FallbackImages = []string{
+		// the fallback of BaseImage in case gcr.io is not available. stored in docker hub
+		// same image is push to https://github.com/kicbase/stable
+		fmt.Sprintf("%s:%s@sha256:%s", dockerhubRepo, Version, baseImageSHA),
+		// try without sha because #11068
+		fmt.Sprintf("%s:%s", gcrRepo, Version),
+		fmt.Sprintf("%s:%s", dockerhubRepo, Version),
+	}
 )
 
 // Config is configuration for the kic driver used by registry
 type Config struct {
+	ClusterName       string            // The cluster the container belongs to
 	MachineName       string            // maps to the container name being created
 	CPU               int               // Number of CPU cores assigned to the container
 	Memory            int               // max memory in MB
@@ -55,4 +64,10 @@ type Config struct {
 	Envs              map[string]string // key,value of environment variables passed to the node
 	KubernetesVersion string            // Kubernetes version to install
 	ContainerRuntime  string            // container runtime kic is running
+	Network           string            // network to run with kic
+	Subnet            string            // subnet to be used on kic cluster
+	StaticIP          string            // static IP for the kic cluster
+	ExtraArgs         []string          // a list of any extra option to pass to oci binary during creation time, for example --expose 8080...
+	ListenAddress     string            // IP Address to listen to
+	GPUs              string            // add GPU devices to the container
 }

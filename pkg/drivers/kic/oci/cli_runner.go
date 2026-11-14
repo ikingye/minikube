@@ -21,14 +21,23 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/golang/glog"
+	"k8s.io/klog/v2"
+
+	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/out"
+	"k8s.io/minikube/pkg/minikube/style"
 )
+
+var warnLock sync.Mutex
+var alreadyWarnedCmds = make(map[string]bool)
 
 // RunResult holds the results of a Runner
 type RunResult struct {
@@ -44,10 +53,10 @@ func (rr RunResult) Command() string {
 	sb.WriteString(rr.Args[0])
 	for _, a := range rr.Args[1:] {
 		if strings.Contains(a, " ") {
-			sb.WriteString(fmt.Sprintf(` "%s"`, a))
+			fmt.Fprintf(&sb, ` "%s"`, a)
 			continue
 		}
-		sb.WriteString(fmt.Sprintf(" %s", a))
+		fmt.Fprintf(&sb, " %s", a)
 	}
 	return sb.String()
 }
@@ -56,18 +65,48 @@ func (rr RunResult) Command() string {
 func (rr RunResult) Output() string {
 	var sb strings.Builder
 	if rr.Stdout.Len() > 0 {
-		sb.WriteString(fmt.Sprintf("-- stdout --\n%s\n-- /stdout --", rr.Stdout.Bytes()))
+		fmt.Fprintf(&sb, "-- stdout --\n%s\n-- /stdout --", rr.Stdout.Bytes())
 	}
 	if rr.Stderr.Len() > 0 {
-		sb.WriteString(fmt.Sprintf("\n** stderr ** \n%s\n** /stderr **", rr.Stderr.Bytes()))
+		fmt.Fprintf(&sb, "\n** stderr ** \n%s\n** /stderr **", rr.Stderr.Bytes())
 	}
 	return sb.String()
 }
 
+// IsRootlessForced returns whether rootless mode is explicitly required.
+func IsRootlessForced() bool {
+	s := os.Getenv(constants.MinikubeRootlessEnv)
+	if s == "" {
+		return false
+	}
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		klog.ErrorS(err, "failed to parse", "env", constants.MinikubeRootlessEnv, "value", s)
+		return false
+	}
+	return v
+}
+
+type prefixCmdOptions struct {
+	sudoFlags []string
+}
+
+type PrefixCmdOption func(*prefixCmdOptions)
+
+func WithSudoFlags(ss ...string) PrefixCmdOption {
+	return func(o *prefixCmdOptions) {
+		o.sudoFlags = ss
+	}
+}
+
 // PrefixCmd adds any needed prefix (such as sudo) to the command
-func PrefixCmd(cmd *exec.Cmd) *exec.Cmd {
-	if cmd.Args[0] == Podman && runtime.GOOS == "linux" { // want sudo when not running podman-remote
-		cmdWithSudo := exec.Command("sudo", append([]string{"-n"}, cmd.Args...)...)
+func PrefixCmd(cmd *exec.Cmd, opt ...PrefixCmdOption) *exec.Cmd {
+	var o prefixCmdOptions
+	for _, f := range opt {
+		f(&o)
+	}
+	if cmd.Args[0] == Podman && runtime.GOOS == "linux" && !IsRootlessForced() { // want sudo when not running podman-remote
+		cmdWithSudo := exec.Command("sudo", append(append([]string{"-n"}, o.sudoFlags...), cmd.Args...)...)
 		cmdWithSudo.Env = cmd.Env
 		cmdWithSudo.Dir = cmd.Dir
 		cmdWithSudo.Stdin = cmd.Stdin
@@ -76,6 +115,22 @@ func PrefixCmd(cmd *exec.Cmd) *exec.Cmd {
 		cmd = cmdWithSudo
 	}
 	return cmd
+}
+
+func suppressDockerMessage() bool {
+	envKey := "MINIKUBE_SUPPRESS_DOCKER_PERFORMANCE"
+	env := os.Getenv(envKey)
+	if env == "" {
+		return false
+	}
+	suppress, err := strconv.ParseBool(env)
+	if err != nil {
+		msg := fmt.Sprintf("failed to parse bool from the %s env, defaulting to 'false'; received: %s: %v", envKey, env, err)
+		klog.Warning(msg)
+		out.Styled(style.Warning, msg)
+		return false
+	}
+	return suppress
 }
 
 // runCmd runs a command exec.Command against docker daemon or podman
@@ -89,23 +144,24 @@ func runCmd(cmd *exec.Cmd, warnSlow ...bool) (*RunResult, error) {
 
 	killTime := 19 * time.Second // this will be applied only if warnSlow is true
 	warnTime := 2 * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), killTime)
-	defer cancel()
 
 	if cmd.Args[1] == "volume" || cmd.Args[1] == "ps" { // volume and ps requires more time than inspect
 		killTime = 30 * time.Second
 		warnTime = 3 * time.Second
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), killTime)
+	defer cancel()
+
 	if warn { // convert exec.Command to with context
 		cmdWithCtx := exec.CommandContext(ctx, cmd.Args[0], cmd.Args[1:]...)
-		cmdWithCtx.Stdout = cmd.Stdout //copying the original command
+		cmdWithCtx.Stdout = cmd.Stdout // copying the original command
 		cmdWithCtx.Stderr = cmd.Stderr
 		cmd = cmdWithCtx
 	}
 
 	rr := &RunResult{Args: cmd.Args}
-	glog.Infof("Run: %v", rr.Command())
+	klog.Infof("Run: %v", rr.Command())
 
 	var outb, errb io.Writer
 	if cmd.Stdout == nil {
@@ -128,26 +184,37 @@ func runCmd(cmd *exec.Cmd, warnSlow ...bool) (*RunResult, error) {
 	start := time.Now()
 	err := cmd.Run()
 	elapsed := time.Since(start)
-	if warn {
+	if warn && !out.JSON && !suppressDockerMessage() {
 		if elapsed > warnTime {
-			out.WarningT(`Executing "{{.command}}" took an unusually long time: {{.duration}}`, out.V{"command": rr.Command(), "duration": elapsed})
-			// Don't show any restarting hint, when running podman locally (on linux, with sudo). Only when having a service.
-			if cmd.Args[0] != "sudo" {
-				out.ErrT(out.Tip, `Restarting the {{.name}} service may improve performance.`, out.V{"name": cmd.Args[0]})
+			warnLock.Lock()
+			_, ok := alreadyWarnedCmds[rr.Command()]
+			if !ok {
+				alreadyWarnedCmds[rr.Command()] = true
+			}
+			warnLock.Unlock()
+
+			if !ok {
+				out.WarningT(`Executing "{{.command}}" took an unusually long time: {{.duration}}`, out.V{"command": rr.Command(), "duration": elapsed})
+				// Don't show any restarting hint, when running podman locally (on linux, with sudo). Only when having a service.
+				if cmd.Args[0] != "sudo" {
+					out.ErrT(style.Tip, `Restarting the {{.name}} service may improve performance.`, out.V{"name": cmd.Args[0]})
+				}
 			}
 		}
 
 		if ctx.Err() == context.DeadlineExceeded {
-			return rr, fmt.Errorf("%q timed out after %s", rr.Command(), killTime)
+			return rr, context.DeadlineExceeded
 		}
 	}
 
-	if exitError, ok := err.(*exec.ExitError); ok {
-		rr.ExitCode = exitError.ExitCode()
+	if ex, ok := err.(*exec.ExitError); ok {
+		klog.Warningf("%s returned with exit code %d", rr.Command(), ex.ExitCode())
+		rr.ExitCode = ex.ExitCode()
 	}
+
 	// Decrease log spam
 	if elapsed > (1 * time.Second) {
-		glog.Infof("Completed: %s: (%s)", rr.Command(), elapsed)
+		klog.Infof("Completed: %s: (%s)", rr.Command(), elapsed)
 	}
 	if err == nil {
 		return rr, nil

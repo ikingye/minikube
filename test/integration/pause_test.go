@@ -1,4 +1,4 @@
-// +build integration
+//go:build integration
 
 /*
 Copyright 2020 The Kubernetes Authors All rights reserved.
@@ -24,14 +24,17 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"k8s.io/minikube/pkg/minikube/cluster"
 )
 
+// TestPause tests minikube pause functionality
 func TestPause(t *testing.T) {
 	MaybeParallel(t)
 
 	type validateFunc func(context.Context, *testing.T, string)
 	profile := UniqueProfileName("pause")
-	ctx, cancel := context.WithTimeout(context.Background(), Minutes(30))
+	ctx, cancel := context.WithTimeout(context.Background(), Minutes(15))
 	defer Cleanup(t, profile, cancel)
 
 	// Serial tests
@@ -43,6 +46,7 @@ func TestPause(t *testing.T) {
 			{"Start", validateFreshStart},
 			{"SecondStartNoReconfiguration", validateStartNoReconfigure},
 			{"Pause", validatePause},
+			{"VerifyStatus", validateStatus},
 			{"Unpause", validateUnpause},
 			{"PauseAgain", validatePause},
 			{"DeletePaused", validateDelete},
@@ -50,6 +54,14 @@ func TestPause(t *testing.T) {
 		}
 		for _, tc := range tests {
 			tc := tc
+
+			if ctx.Err() == context.DeadlineExceeded {
+				t.Fatalf("Unable to run more tests (deadline exceeded)")
+			}
+			if t.Failed() {
+				t.Fatalf("Previous test failed, not running dependent tests")
+			}
+
 			t.Run(tc.name, func(t *testing.T) {
 				tc.validator(ctx, t, profile)
 				if t.Failed() && *postMortemLogs {
@@ -60,10 +72,11 @@ func TestPause(t *testing.T) {
 	})
 }
 
+// validateFreshStart just starts a new minikube cluster
 func validateFreshStart(ctx context.Context, t *testing.T, profile string) {
 	defer PostMortemLogs(t, profile)
 
-	args := append([]string{"start", "-p", profile, "--memory=1800", "--install-addons=false", "--wait=all"}, StartArgs()...)
+	args := append([]string{"start", "-p", profile, "--memory=3072", "--install-addons=false", "--wait=all"}, StartArgs()...)
 	rr, err := Run(t, exec.CommandContext(ctx, Target(), args...))
 	if err != nil {
 		t.Fatalf("failed to start minikube with args: %q : %v", rr.Command(), err)
@@ -73,8 +86,12 @@ func validateFreshStart(ctx context.Context, t *testing.T, profile string) {
 // validateStartNoReconfigure validates that starting a running cluster does not invoke reconfiguration
 func validateStartNoReconfigure(ctx context.Context, t *testing.T, profile string) {
 	defer PostMortemLogs(t, profile)
+	if KVMDriver() {
+		t.Skip("skipping: flaky on KVM driver: https://github.com/kubernetes/minikube/issues/23141")
+	}
 
 	args := []string{"start", "-p", profile, "--alsologtostderr", "-v=1"}
+	args = append(args, StartArgs()...)
 	rr, err := Run(t, exec.CommandContext(ctx, Target(), args...))
 	if err != nil {
 		t.Fatalf("failed to second start a running minikube with args: %q : %v", rr.Command(), err)
@@ -88,6 +105,7 @@ func validateStartNoReconfigure(ctx context.Context, t *testing.T, profile strin
 	}
 }
 
+// validatePause runs minikube pause
 func validatePause(ctx context.Context, t *testing.T, profile string) {
 	defer PostMortemLogs(t, profile)
 
@@ -98,6 +116,7 @@ func validatePause(ctx context.Context, t *testing.T, profile string) {
 	}
 }
 
+// validateUnpause runs minikube unpause
 func validateUnpause(ctx context.Context, t *testing.T, profile string) {
 	defer PostMortemLogs(t, profile)
 
@@ -108,6 +127,7 @@ func validateUnpause(ctx context.Context, t *testing.T, profile string) {
 	}
 }
 
+// validateDelete deletes the unpaused cluster
 func validateDelete(ctx context.Context, t *testing.T, profile string) {
 	defer PostMortemLogs(t, profile)
 
@@ -118,7 +138,7 @@ func validateDelete(ctx context.Context, t *testing.T, profile string) {
 	}
 }
 
-// make sure no left over left after deleting a profile such as containers or volumes
+// validateVerifyDeleted makes sure no left over left after deleting a profile such as containers or volumes
 func validateVerifyDeleted(ctx context.Context, t *testing.T, profile string) {
 	defer PostMortemLogs(t, profile)
 
@@ -158,6 +178,31 @@ func validateVerifyDeleted(ctx context.Context, t *testing.T, profile string) {
 			t.Errorf("expected to see error and volume %q to not exist after deletion but got no error and this output: %s", rr.Command(), rr.Output())
 		}
 
+		rr, err = Run(t, exec.CommandContext(ctx, bin, "network", "ls"))
+		if err != nil {
+			t.Errorf("failed to get list of networks: %v", err)
+		}
+		if strings.Contains(rr.Output(), profile) {
+			t.Errorf("expected network %q to not exist after deletion but contained: %s", profile, rr.Output())
+		}
 	}
 
+}
+
+// validateStatus makes sure paused clusters show up in minikube status correctly
+func validateStatus(ctx context.Context, t *testing.T, profile string) {
+	defer PostMortemLogs(t, profile)
+
+	statusOutput := runStatusCmd(ctx, t, profile, false)
+	var cs cluster.State
+	if err := json.Unmarshal(statusOutput, &cs); err != nil {
+		t.Fatalf("unmarshalling: %v", err)
+	}
+	// verify the status looks as we expect
+	if cs.StatusCode != cluster.Paused {
+		t.Fatalf("incorrect status code: %v", cs.StatusCode)
+	}
+	if cs.StatusName != "Paused" {
+		t.Fatalf("incorrect status name: %v", cs.StatusName)
+	}
 }

@@ -17,31 +17,35 @@ limitations under the License.
 package oci
 
 import (
-	"os"
-	"time"
-
 	"bufio"
 	"bytes"
-
-	"github.com/docker/machine/libmachine/state"
-	"github.com/golang/glog"
-	"github.com/pkg/errors"
-	"k8s.io/minikube/pkg/minikube/constants"
-	"k8s.io/minikube/pkg/util/retry"
-
+	"context"
+	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/blang/semver/v4"
+	"k8s.io/minikube/pkg/libmachine/state"
+
+	"k8s.io/klog/v2"
+
+	"k8s.io/minikube/pkg/minikube/constants"
+	"k8s.io/minikube/pkg/minikube/out"
+	"k8s.io/minikube/pkg/util/retry"
 )
 
 // DeleteContainersByLabel deletes all containers that have a specific label
 // if there no containers found with the given 	label, it will return nil
 func DeleteContainersByLabel(ociBin string, label string) []error {
 	var deleteErrs []error
-
-	cs, err := ListContainersByLabel(ociBin, label)
+	ctx := context.Background()
+	cs, err := ListContainersByLabel(ctx, ociBin, label)
 	if err != nil {
 		return []error{fmt.Errorf("listing containers by label %q", label)}
 	}
@@ -55,16 +59,16 @@ func DeleteContainersByLabel(ociBin string, label string) []error {
 		// only try to delete if docker/podman inspect returns
 		// if it doesn't it means docker daemon is stuck and needs restart
 		if err != nil {
-			deleteErrs = append(deleteErrs, errors.Wrapf(err, "delete container %s: %s daemon is stuck. please try again!", c, ociBin))
-			glog.Errorf("%s daemon seems to be stuck. Please try restarting your %s. :%v", ociBin, ociBin, err)
+			deleteErrs = append(deleteErrs, fmt.Errorf("delete container %s: %s daemon is stuck. please try again: %w", c, ociBin, err))
+			klog.Errorf("%s daemon seems to be stuck. please try restarting your %s :%v", ociBin, ociBin, err)
 			continue
 		}
 		if err := ShutDown(ociBin, c); err != nil {
-			glog.Infof("couldn't shut down %s (might be okay): %v ", c, err)
+			klog.Infof("couldn't shut down %s (might be okay): %v ", c, err)
 		}
 
 		if _, err := runCmd(exec.Command(ociBin, "rm", "-f", "-v", c)); err != nil {
-			deleteErrs = append(deleteErrs, errors.Wrapf(err, "delete container %s: output %s", c, err))
+			deleteErrs = append(deleteErrs, fmt.Errorf("delete container %s: output %s: %w", c, err, err))
 		}
 
 	}
@@ -72,19 +76,20 @@ func DeleteContainersByLabel(ociBin string, label string) []error {
 }
 
 // DeleteContainer deletes a container by ID or Name
-func DeleteContainer(ociBin string, name string) error {
-
+func DeleteContainer(ctx context.Context, ociBin string, name string) error {
 	_, err := ContainerStatus(ociBin, name)
-	if err != nil {
-		glog.Errorf("%s daemon seems to be stuck. Please try restarting your %s. Will try to delete anyways: %v", ociBin, ociBin, err)
+	if err == context.DeadlineExceeded {
+		out.WarningT("{{.ocibin}} is taking an unusually long time to respond, consider restarting {{.ocibin}}", out.V{"ociBin": ociBin})
+	} else if err != nil {
+		klog.Warningf("error getting container status, will try to delete anyways: %v", err)
 	}
 	// try to delete anyways
 	if err := ShutDown(ociBin, name); err != nil {
-		glog.Infof("couldn't shut down %s (might be okay): %v ", name, err)
+		klog.Infof("couldn't shut down %s (might be okay): %v ", name, err)
 	}
 
-	if _, err := runCmd(exec.Command(ociBin, "rm", "-f", "-v", name)); err != nil {
-		return errors.Wrapf(err, "delete %s", name)
+	if _, err := runCmd(exec.CommandContext(ctx, ociBin, "rm", "-f", "-v", name)); err != nil {
+		return fmt.Errorf("delete %s: %w", name, err)
 	}
 	return nil
 }
@@ -93,14 +98,56 @@ func DeleteContainer(ociBin string, name string) error {
 // For the container runtime, it creates a volume which will be mounted into kic
 func PrepareContainerNode(p CreateParams) error {
 	if err := createVolume(p.OCIBinary, p.Name, p.Name); err != nil {
-		return errors.Wrapf(err, "creating volume for %s container", p.Name)
+		return fmt.Errorf("creating volume for %s container: %w", p.Name, err)
 	}
-	glog.Infof("Successfully created a %s volume %s", p.OCIBinary, p.Name)
+	klog.Infof("Successfully created a %s volume %s", p.OCIBinary, p.Name)
+	if err := prepareVolumeSideCar(p.OCIBinary, p.Image, p.Name); err != nil {
+		return fmt.Errorf("preparing volume for %s container: %w", p.Name, err)
+	}
+	klog.Infof("Successfully prepared a %s volume %s", p.OCIBinary, p.Name)
 	return nil
 }
 
+// kernelModulesPath checks for the existence of a known alternative kernel modules directory,
+// returning the default if none are present
+func kernelModulesPath() string {
+	paths := []string{
+		"/run/current-system/kernel-modules/lib/modules", // NixOS
+	}
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return "/lib/modules"
+}
+
+func checkRunning(p CreateParams) func() error {
+	return func() error {
+		r, err := ContainerRunning(p.OCIBinary, p.Name)
+		if err != nil {
+			return fmt.Errorf("temporary error checking running for %q : %v", p.Name, err)
+		}
+		if !r {
+			return fmt.Errorf("temporary error created container %q is not running yet", p.Name)
+		}
+		s, err := ContainerStatus(p.OCIBinary, p.Name)
+		if err != nil {
+			return fmt.Errorf("temporary error checking status for %q : %v", p.Name, err)
+		}
+		if s != state.Running {
+			return fmt.Errorf("temporary error created container %q is not running yet", p.Name)
+		}
+		if !iptablesFileExists(p.OCIBinary, p.Name) {
+			return errors.New("iptables file doesn't exist, see #8179")
+		}
+		klog.Infof("the created container %q has a running status.", p.Name)
+		return nil
+	}
+}
+
 // CreateContainerNode creates a new container node
-func CreateContainerNode(p CreateParams) error {
+func CreateContainerNode(p CreateParams) error { //nolint to suppress cyclomatic complexity
 	// on windows os, if docker desktop is using Windows Containers. Exit early with error
 	if p.OCIBinary == Docker && runtime.GOOS == "windows" {
 		info, err := DaemonInfo(p.OCIBinary)
@@ -108,8 +155,8 @@ func CreateContainerNode(p CreateParams) error {
 			return ErrWindowsContainers
 		}
 		if err != nil {
-			glog.Warningf("error getting dameon info: %v", err)
-			return errors.Wrap(err, "daemon info")
+			klog.Warningf("error getting daemon info: %v", err)
+			return fmt.Errorf("daemon info: %w", err)
 		}
 	}
 
@@ -123,13 +170,11 @@ func CreateContainerNode(p CreateParams) error {
 		// for now this is what we want. in the future we may revisit this.
 		"--privileged",
 		"--security-opt", "seccomp=unconfined", //  ignore seccomp
-		// ignore apparmore github actions docker: https://github.com/kubernetes/minikube/issues/7624
-		"--security-opt", "apparmor=unconfined",
 		"--tmpfs", "/tmp", // various things depend on working /tmp
 		"--tmpfs", "/run", // systemd wants a writable /run
 		// logs,pods be stroed on  filesystem vs inside container,
 		// some k8s things want /lib/modules
-		"-v", "/lib/modules:/lib/modules:ro",
+		"-v", fmt.Sprintf("%s:/lib/modules:ro", kernelModulesPath()),
 		"--hostname", p.Name, // make hostname match container name
 		"--name", p.Name, // ... and set the container name
 		"--label", fmt.Sprintf("%s=%s", CreatedByLabelKey, "true"),
@@ -137,44 +182,81 @@ func CreateContainerNode(p CreateParams) error {
 		"--label", p.ClusterLabel,
 		// label the node with the role ID
 		"--label", fmt.Sprintf("%s=%s", nodeRoleLabelKey, p.Role),
-		// label th enode wuth the node ID
+		// label th enode with the node ID
 		"--label", p.NodeLabel,
 	}
-
-	if p.OCIBinary == Podman { // enable execing in /var
-		// podman mounts var/lib with no-exec by default  https://github.com/containers/libpod/issues/5103
-		runArgs = append(runArgs, "--volume", fmt.Sprintf("%s:/var:exec", p.Name))
-	}
-	if p.OCIBinary == Docker {
-		runArgs = append(runArgs, "--volume", fmt.Sprintf("%s:/var", p.Name))
+	// to provide a static IP
+	if p.Network != "" && p.IP != "" {
+		runArgs = append(runArgs, "--network", p.Network)
+		runArgs = append(runArgs, "--ip", p.IP)
 	}
 
-	runArgs = append(runArgs, fmt.Sprintf("--cpus=%s", p.CPUs))
-
-	memcgSwap := true
-	if runtime.GOOS == "linux" {
-		if _, err := os.Stat("/sys/fs/cgroup/memory/memsw.limit_in_bytes"); os.IsNotExist(err) {
-			// requires CONFIG_MEMCG_SWAP_ENABLED or cgroup_enable=memory in grub
-			glog.Warning("Your kernel does not support swap limit capabilities or the cgroup is not mounted.")
-			memcgSwap = false
-		}
+	switch p.GPUs {
+	case "all", "nvidia":
+		runArgs = append(runArgs, "--gpus", "all", "--env", "NVIDIA_DRIVER_CAPABILITIES=all")
+	case "nvidia.com":
+		runArgs = append(runArgs, "--device", "nvidia.com/gpu=all")
+	case "amd":
+		/* https://rocm.docs.amd.com/projects/install-on-linux/en/latest/how-to/docker.html
+		 * "--security-opt seccomp=unconfined" is also required but included above.
+		 */
+		runArgs = append(runArgs, "--device", "/dev/kfd", "--device", "/dev/dri", "--group-add", "video", "--group-add", "render")
 	}
 
-	if p.OCIBinary == Podman && memcgSwap { // swap is required for memory
-		runArgs = append(runArgs, fmt.Sprintf("--memory=%s", p.Memory))
-	}
-	if p.OCIBinary == Docker { // swap is only required for --memory-swap
-		runArgs = append(runArgs, fmt.Sprintf("--memory=%s", p.Memory))
-	}
+	memcgSwap := hasMemorySwapCgroup()
+	memcg := HasMemoryCgroup()
 
 	// https://www.freedesktop.org/wiki/Software/systemd/ContainerInterface/
 	var virtualization string
-	if p.OCIBinary == Podman {
+	if p.OCIBinary == Podman { // enable execing in /var
+		// podman mounts var/lib with no-exec by default  https://github.com/containers/libpod/issues/5103
+		runArgs = append(runArgs, "--volume", fmt.Sprintf("%s:/var:exec", p.Name))
+
+		if memcgSwap && p.Memory != NoLimit {
+			runArgs = append(runArgs, fmt.Sprintf("--memory-swap=%s", p.Memory))
+		}
+
+		if memcg && p.Memory != NoLimit {
+			runArgs = append(runArgs, fmt.Sprintf("--memory=%s", p.Memory))
+		}
+
 		virtualization = "podman" // VIRTUALIZATION_PODMAN
 	}
 	if p.OCIBinary == Docker {
+		runArgs = append(runArgs, "--volume", fmt.Sprintf("%s:/var", p.Name))
+		// ignore apparmore github actions docker: https://github.com/kubernetes/minikube/issues/7624
+		runArgs = append(runArgs, "--security-opt", "apparmor=unconfined")
+
+		if memcg && p.Memory != NoLimit {
+			runArgs = append(runArgs, fmt.Sprintf("--memory=%s", p.Memory))
+		}
+		if memcgSwap && p.Memory != NoLimit {
+			// Disable swap by setting the value to match
+			runArgs = append(runArgs, fmt.Sprintf("--memory-swap=%s", p.Memory))
+		}
+
 		virtualization = "docker" // VIRTUALIZATION_DOCKER
 	}
+
+	cpuCfsPeriod := true
+	cpuCfsQuota := true
+	if runtime.GOOS == "linux" {
+		if _, err := os.Stat("/sys/fs/cgroup/cpu/cpu.cfs_period_us"); os.IsNotExist(err) {
+			cpuCfsPeriod = false
+		}
+		if _, err := os.Stat("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"); os.IsNotExist(err) {
+			cpuCfsQuota = false
+		}
+		if !cpuCfsPeriod || !cpuCfsQuota {
+			// requires CONFIG_CFS_BANDWIDTH
+			klog.Warning("Your kernel does not support CPU cfs period/quota or the cgroup is not mounted.")
+		}
+	}
+
+	if cpuCfsPeriod && cpuCfsQuota && p.CPUs != NoLimit {
+		runArgs = append(runArgs, fmt.Sprintf("--cpus=%s", p.CPUs))
+	}
+
 	runArgs = append(runArgs, "-e", fmt.Sprintf("%s=%s", "container", virtualization))
 
 	for key, val := range p.Envs {
@@ -191,31 +273,17 @@ func CreateContainerNode(p CreateParams) error {
 	}
 
 	if err := createContainer(p.OCIBinary, p.Image, withRunArgs(runArgs...), withMounts(p.Mounts), withPortMappings(p.PortMappings)); err != nil {
-		return errors.Wrap(err, "create container")
+		return fmt.Errorf("create container: %w", err)
 	}
 
-	checkRunning := func() error {
-		r, err := ContainerRunning(p.OCIBinary, p.Name)
+	if err := retry.Expo(checkRunning(p), 15*time.Millisecond, 25*time.Second); err != nil {
+		excerpt := LogContainerDebug(p.OCIBinary, p.Name)
+		_, err := DaemonInfo(p.OCIBinary)
 		if err != nil {
-			return fmt.Errorf("temporary error checking running for %q : %v", p.Name, err)
+			return fmt.Errorf("container name %q: %w", p.Name, ErrDaemonInfo)
 		}
-		if !r {
-			return fmt.Errorf("temporary error created container %q is not running yet", p.Name)
-		}
-		s, err := ContainerStatus(p.OCIBinary, p.Name)
-		if err != nil {
-			return fmt.Errorf("temporary error checking status for %q : %v", p.Name, err)
-		}
-		if s != state.Running {
-			return fmt.Errorf("temporary error created container %q is not running yet", p.Name)
-		}
-		glog.Infof("the created container %q has a running status.", p.Name)
-		return nil
-	}
 
-	// retry up to up 13 seconds to make sure the created container status is running.
-	if err := retry.Expo(checkRunning, 13*time.Millisecond, time.Second*13); err != nil {
-		return errors.Wrapf(err, "check container %q running", p.Name)
+		return fmt.Errorf("container name %q: log: %s: %w", p.Name, excerpt, ErrExitedUnexpectedly)
 	}
 
 	return nil
@@ -240,7 +308,7 @@ func createContainer(ociBin string, image string, opts ...createOpt) error {
 
 	// to run nested container from privileged container in podman https://bugzilla.redhat.com/show_bug.cgi?id=1687713
 	// only add when running locally (linux), when running remotely it needs to be configured on server in libpod.conf
-	if ociBin == Podman && runtime.GOOS == "linux" {
+	if ociBin == Podman && runtime.GOOS == "linux" && !IsRootlessForced() {
 		args = append(args, "--cgroup-manager", "cgroupfs")
 	}
 
@@ -248,7 +316,15 @@ func createContainer(ociBin string, image string, opts ...createOpt) error {
 	args = append(args, image)
 	args = append(args, o.ContainerArgs...)
 
-	if _, err := runCmd(exec.Command(ociBin, args...)); err != nil {
+	if rr, err := runCmd(exec.Command(ociBin, args...)); err != nil {
+		// full error: docker: Error response from daemon: Range of CPUs is from 0.01 to 8.00, as there are only 8 CPUs available.
+		if strings.Contains(rr.Output(), "Range of CPUs is from") && strings.Contains(rr.Output(), "CPUs available") { // CPUs available
+			return ErrCPUCountLimit
+		}
+		// example: docker: Error response from daemon: Address already in use.
+		if strings.Contains(rr.Output(), "Address already in use") {
+			return ErrIPinUse
+		}
 		return err
 	}
 
@@ -262,7 +338,7 @@ func StartContainer(ociBin string, container string) error {
 
 	// to run nested container from privileged container in podman https://bugzilla.redhat.com/show_bug.cgi?id=1687713
 	// only add when running locally (linux), when running remotely it needs to be configured on server in libpod.conf
-	if ociBin == Podman && runtime.GOOS == "linux" {
+	if ociBin == Podman && runtime.GOOS == "linux" && !IsRootlessForced() {
 		args = append(args, "--cgroup-manager", "cgroupfs")
 	}
 
@@ -277,9 +353,14 @@ func StartContainer(ociBin string, container string) error {
 
 // ContainerID returns id of a container name
 func ContainerID(ociBin string, nameOrID string) (string, error) {
-	rr, err := runCmd(exec.Command(ociBin, "inspect", "-f", "{{.Id}}", nameOrID))
+	rr, err := runCmd(exec.Command(ociBin, "container", "inspect", "-f", "{{.Id}}", nameOrID))
 	if err != nil { // don't return error if not found, only return empty string
-		if strings.Contains(rr.Stdout.String(), "Error: No such object:") || strings.Contains(rr.Stdout.String(), "unable to find") {
+		if strings.Contains(rr.Stdout.String(), "Error: No such object:") ||
+			strings.Contains(rr.Stdout.String(), "Error: No such container:") ||
+			strings.Contains(rr.Stdout.String(), "unable to find") ||
+			strings.Contains(rr.Stdout.String(), "Error: error inspecting object") ||
+			strings.Contains(rr.Stdout.String(), "Error: error looking up container") ||
+			strings.Contains(rr.Stdout.String(), "no such container") {
 			err = nil
 		}
 		return "", err
@@ -294,8 +375,8 @@ func ContainerExists(ociBin string, name string, warnSlow ...bool) (bool, error)
 		return false, err
 	}
 
-	containers := strings.Split(rr.Stdout.String(), "\n")
-	for _, c := range containers {
+	containers := strings.SplitSeq(rr.Stdout.String(), "\n")
+	for c := range containers {
 		if strings.TrimSpace(c) == name {
 			return true, nil
 		}
@@ -307,7 +388,7 @@ func ContainerExists(ociBin string, name string, warnSlow ...bool) (bool, error)
 // IsCreatedByMinikube returns true if the container was created by minikube
 // with default assumption that it is not created by minikube when we don't know for sure
 func IsCreatedByMinikube(ociBin string, nameOrID string) bool {
-	rr, err := runCmd(exec.Command(ociBin, "inspect", nameOrID, "--format", "{{.Config.Labels}}"))
+	rr, err := runCmd(exec.Command(ociBin, "container", "inspect", nameOrID, "--format", "{{.Config.Labels}}"))
 	if err != nil {
 		return false
 	}
@@ -321,12 +402,12 @@ func IsCreatedByMinikube(ociBin string, nameOrID string) bool {
 
 // ListOwnedContainers lists all the containres that kic driver created on user's machine using a label
 func ListOwnedContainers(ociBin string) ([]string, error) {
-	return ListContainersByLabel(ociBin, ProfileLabelKey)
+	return ListContainersByLabel(context.Background(), ociBin, ProfileLabelKey)
 }
 
 // inspect return low-level information on containers
 func inspect(ociBin string, containerNameOrID, format string) ([]string, error) {
-	cmd := exec.Command(ociBin, "inspect",
+	cmd := exec.Command(ociBin, "container", "inspect",
 		"-f", format,
 		containerNameOrID) // ... against the "node" container
 	var buff bytes.Buffer
@@ -338,11 +419,17 @@ func inspect(ociBin string, containerNameOrID, format string) ([]string, error) 
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
+	if scanErr := scanner.Err(); scanErr != nil {
+		klog.Warningf("failed to read output: %v", scanErr)
+		if err == nil {
+			err = scanErr
+		}
+	}
 	return lines, err
 }
 
 /*
-This is adapated from:
+This is adapted from:
 https://github.com/kubernetes/kubernetes/blob/07a5488b2a8f67add543da72e8819407d8314204/pkg/kubelet/dockershim/helpers.go#L115-L155
 */
 // generateMountBindings converts the mount list to a list of strings that
@@ -367,14 +454,12 @@ func generateMountBindings(mounts ...Mount) []string {
 			attrs = append(attrs, "Z")
 		}
 		switch m.Propagation {
-		case MountPropagationNone:
-			// noop, private is default
 		case MountPropagationBidirectional:
 			attrs = append(attrs, "rshared")
 		case MountPropagationHostToContainer:
 			attrs = append(attrs, "rslave")
 		default:
-			// Falls back to "private"
+			// Falls back to "private" (including MountPropagationNone)
 		}
 
 		if len(attrs) > 0 {
@@ -403,6 +488,9 @@ func isUsernsRemapEnabled(ociBin string) bool {
 
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		klog.Warningf("failed to read output: %v", err)
 	}
 
 	if len(lines) > 0 {
@@ -451,8 +539,8 @@ func withPortMappings(portMappings []PortMapping) createOpt {
 }
 
 // ListContainersByLabel returns all the container names with a specified label
-func ListContainersByLabel(ociBin string, label string, warnSlow ...bool) ([]string, error) {
-	rr, err := runCmd(exec.Command(ociBin, "ps", "-a", "--filter", fmt.Sprintf("label=%s", label), "--format", "{{.Names}}"), warnSlow...)
+func ListContainersByLabel(ctx context.Context, ociBin string, label string, warnSlow ...bool) ([]string, error) {
+	rr, err := runCmd(exec.CommandContext(ctx, ociBin, "ps", "-a", "--filter", fmt.Sprintf("label=%s", label), "--format", "{{.Names}}"), warnSlow...)
 	if err != nil {
 		return nil, err
 	}
@@ -464,49 +552,74 @@ func ListContainersByLabel(ociBin string, label string, warnSlow ...bool) ([]str
 			names = append(names, n)
 		}
 	}
-	return names, err
+	return names, s.Err()
+}
+
+// ListImagesRepository returns all the images names
+func ListImagesRepository(ctx context.Context, ociBin string) ([]string, error) {
+	rr, err := runCmd(exec.CommandContext(ctx, ociBin, "images", "--format", "{{.Repository}}:{{.Tag}}"))
+	if err != nil {
+		return nil, err
+	}
+	s := bufio.NewScanner(bytes.NewReader(rr.Stdout.Bytes()))
+	var names []string
+	for s.Scan() {
+		n := strings.TrimSpace(s.Text())
+		if n != "" {
+			// add docker.io prefix to image name
+			if !strings.Contains(n, ".io/") {
+				n = "docker.io/" + n
+			}
+			names = append(names, n)
+		}
+	}
+	return names, s.Err()
 }
 
 // PointToHostDockerDaemon will unset env variables that point to docker inside minikube
 // to make sure it points to the docker daemon installed by user.
 func PointToHostDockerDaemon() error {
-	p := os.Getenv(constants.MinikubeActiveDockerdEnv)
-	if p != "" {
-		glog.Infof("shell is pointing to dockerd inside minikube. will unset to use host")
-	}
-
-	for i := range constants.DockerDaemonEnvs {
-		e := constants.DockerDaemonEnvs[i]
-		err := os.Setenv(e, "")
-		if err != nil {
-			return errors.Wrapf(err, "resetting %s env", e)
+	if p := os.Getenv(constants.MinikubeActiveDockerdEnv); p != "" {
+		klog.Infof("shell is pointing to dockerd inside minikube. will unset to use host")
+		for _, e := range constants.DockerDaemonEnvs {
+			if err := resetEnv(e); err != nil {
+				return err
+			}
 		}
+	}
+	return nil
+}
 
+func resetEnv(key string) error {
+	v := os.Getenv(constants.MinikubeExistingPrefix + key)
+	if v == "" {
+		if err := os.Unsetenv(key); err != nil {
+			return fmt.Errorf("resetting %s env: %w", key, err)
+		}
+		return nil
+	}
+	if err := os.Setenv(key, v); err != nil {
+		return fmt.Errorf("resetting %s env: %w", key, err)
 	}
 	return nil
 }
 
 // PointToHostPodman will unset env variables that point to podman inside minikube
 func PointToHostPodman() error {
-	p := os.Getenv(constants.MinikubeActivePodmanEnv)
-	if p != "" {
-		glog.Infof("shell is pointing to podman inside minikube. will unset to use host")
-	}
-
-	for i := range constants.PodmanRemoteEnvs {
-		e := constants.PodmanRemoteEnvs[i]
-		err := os.Setenv(e, "")
-		if err != nil {
-			return errors.Wrapf(err, "resetting %s env", e)
+	if p := os.Getenv(constants.MinikubeActivePodmanEnv); p != "" {
+		klog.Infof("shell is pointing to podman inside minikube. will unset to use host")
+		for _, e := range constants.PodmanRemoteEnvs {
+			if err := resetEnv(e); err != nil {
+				return err
+			}
 		}
-
 	}
 	return nil
 }
 
 // ContainerRunning returns running state of a container
 func ContainerRunning(ociBin string, name string, warnSlow ...bool) (bool, error) {
-	rr, err := runCmd(exec.Command(ociBin, "inspect", name, "--format={{.State.Running}}"), warnSlow...)
+	rr, err := runCmd(exec.Command(ociBin, "container", "inspect", name, "--format={{.State.Running}}"), warnSlow...)
 	if err != nil {
 		return false, err
 	}
@@ -515,16 +628,14 @@ func ContainerRunning(ociBin string, name string, warnSlow ...bool) (bool, error
 
 // ContainerStatus returns status of a container running,exited,...
 func ContainerStatus(ociBin string, name string, warnSlow ...bool) (state.State, error) {
-	cmd := exec.Command(ociBin, "inspect", name, "--format={{.State.Status}}")
+	cmd := exec.Command(ociBin, "container", "inspect", name, "--format={{.State.Status}}")
 	rr, err := runCmd(cmd, warnSlow...)
 	o := strings.TrimSpace(rr.Stdout.String())
 	switch o {
-	case "configured":
+	case "configured", "exited":
 		return state.Stopped, nil
 	case "running":
 		return state.Running, nil
-	case "exited":
-		return state.Stopped, nil
 	case "paused":
 		return state.Paused, nil
 	case "restarting":
@@ -532,7 +643,7 @@ func ContainerStatus(ociBin string, name string, warnSlow ...bool) (state.State,
 	case "dead":
 		return state.Error, nil
 	default:
-		return state.None, errors.Wrapf(err, "unknown state %q", name)
+		return state.None, fmt.Errorf("unknown state %q: %w", name, err)
 	}
 }
 
@@ -541,26 +652,95 @@ func ContainerStatus(ociBin string, name string, warnSlow ...bool) (state.State,
 // to avoid containers getting stuck before delete https://github.com/kubernetes/minikube/issues/7657
 func ShutDown(ociBin string, name string) error {
 	if _, err := runCmd(exec.Command(ociBin, "exec", "--privileged", "-t", name, "/bin/bash", "-c", "sudo init 0")); err != nil {
-		glog.Infof("error shutdown %s: %v", name, err)
+		klog.Infof("error shutdown %s: %v", name, err)
 	}
 	// helps with allowing docker realize the container is exited and report its status correctly.
 	time.Sleep(time.Second * 1)
-	// wait till it is stoped
+	// wait till it is stopped
 	stopped := func() error {
 		st, err := ContainerStatus(ociBin, name)
 		if st == state.Stopped {
-			glog.Infof("container %s status is %s", name, st)
+			klog.Infof("container %s status is %s", name, st)
 			return nil
 		}
 		if err != nil {
-			glog.Infof("temporary error verifying shutdown: %v", err)
+			klog.Infof("temporary error verifying shutdown: %v", err)
 		}
-		glog.Infof("temporary error: container %s status is %s but expect it to be exited", name, st)
-		return errors.Wrap(err, "couldn't verify cointainer is exited. %v")
+		klog.Infof("temporary error: container %s status is %s but expect it to be exited", name, st)
+		return fmt.Errorf("couldn't verify container is exited: %w", err)
 	}
 	if err := retry.Expo(stopped, time.Millisecond*500, time.Second*20); err != nil {
-		return errors.Wrap(err, "verify shutdown")
+		return fmt.Errorf("verify shutdown: %w", err)
 	}
-	glog.Infof("Successfully shutdown container %s", name)
+	klog.Infof("Successfully shutdown container %s", name)
 	return nil
+}
+
+// iptablesFileExists checks if /var/lib/dpkg/alternatives/iptables exists in minikube
+// this file is necessary for the entrypoint script to pass
+// TODO: https://github.com/kubernetes/minikube/issues/8179
+func iptablesFileExists(ociBin string, nameOrID string) bool {
+	file := "/var/lib/dpkg/alternatives/iptables"
+	_, err := runCmd(exec.Command(ociBin, "exec", nameOrID, "stat", file), false)
+	if err != nil {
+		klog.Warningf("error checking if %s exists: %v", file, err)
+		return false
+	}
+	return true
+}
+
+// DaemonHost returns the ip/hostname where OCI daemon service for driver is running
+// For Podman return the host part of CONTAINER_HOST environment variable if set
+// For Docker return the host part of DOCKER_HOST environment variable if set
+// or DefaultBindIPV4 otherwise
+func DaemonHost(driver string) string {
+	if driver == Podman {
+		if dh := os.Getenv(constants.PodmanContainerHostEnv); dh != "" {
+			if u, err := url.Parse(dh); err == nil {
+				if u.Host != "" {
+					return u.Hostname()
+				}
+			}
+		}
+	}
+	if driver == Docker {
+		if dh := os.Getenv(constants.DockerHostEnv); dh != "" {
+			if u, err := url.Parse(dh); err == nil {
+				if u.Host != "" {
+					return u.Hostname()
+				}
+			}
+		}
+	}
+	return DefaultBindIPV4
+}
+
+// IsExternalDaemonHost returns whether or not the OCI runtime is running on an external/virtual host
+// For Podman driver return true if CONTAINER_HOST is set to a URI, and the URI contains a host item
+// For Docker driver return true if DOCKER_HOST is set to a URI, and the URI contains a host item
+func IsExternalDaemonHost(driver string) bool {
+	if driver == Podman {
+		if dh := os.Getenv(constants.PodmanContainerHostEnv); dh != "" {
+			if u, err := url.Parse(dh); err == nil {
+				return u.Host != ""
+			}
+		}
+	}
+	if driver == Docker {
+		if dh := os.Getenv(constants.DockerHostEnv); dh != "" {
+			if u, err := url.Parse(dh); err == nil {
+				return u.Host != ""
+			}
+		}
+	}
+	return false
+}
+
+func podmanVersion() (semver.Version, error) {
+	rr, err := runCmd(exec.Command(Podman, "version", "--format", "{{.Version}}"))
+	if err != nil {
+		return semver.Version{}, fmt.Errorf("podman version: %w", err)
+	}
+	output := strings.TrimSpace(rr.Stdout.String())
+	return semver.Make(output)
 }

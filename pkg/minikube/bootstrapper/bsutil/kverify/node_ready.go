@@ -18,47 +18,67 @@ limitations under the License.
 package kverify
 
 import (
+	"context"
 	"fmt"
 	"time"
 
-	"github.com/golang/glog"
-	"github.com/pkg/errors"
-	v1 "k8s.io/api/core/v1"
+	core "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
-	kconst "k8s.io/kubernetes/cmd/kubeadm/app/constants"
+	"k8s.io/klog/v2"
+	kconst "k8s.io/minikube/third_party/kubeadm/app/constants"
 )
 
-// WaitForNodeReady waits till kube client reports node status as "ready"
-func WaitForNodeReady(cs *kubernetes.Clientset, timeout time.Duration) error {
-	glog.Info("waiting for node status to be ready ...")
+// WaitNodeCondition waits for specified condition of node name.
+func WaitNodeCondition(cs *kubernetes.Clientset, name string, condition core.NodeConditionType, timeout time.Duration) error {
+	klog.Infof("waiting up to %v for node %q to be %q ...", timeout, name, condition)
 	start := time.Now()
 	defer func() {
-		glog.Infof("duration metric: took %s to wait for WaitForNodeReady...", time.Since(start))
+		klog.Infof("duration metric: took %s for node %q to be %q ...", time.Since(start), name, condition)
 	}()
-	checkReady := func() (bool, error) {
-		if time.Since(start) > timeout {
-			return false, fmt.Errorf("wait for node to be ready timed out")
-		}
-		ns, err := cs.CoreV1().Nodes().List(meta.ListOptions{})
-		if err != nil {
-			glog.Infof("error listing nodes will retry: %v", err)
-			return false, nil
-		}
 
-		for _, n := range ns.Items {
-			for _, c := range n.Status.Conditions {
-				if c.Type == v1.NodeReady && c.Status != v1.ConditionTrue {
-					glog.Infof("node %q has unwanted condition %q : Reason %q Message: %q. will try. ", n.Name, c.Type, c.Reason, c.Message)
-					return false, nil
-				}
-			}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	lap := time.Now()
+	checkCondition := func(ctx context.Context) (bool, error) {
+		status, err := nodeConditionStatus(ctx, cs, name, condition)
+		// done if node has condition
+		if status == core.ConditionTrue {
+			klog.Infof("node %q is %q", name, condition)
+			return true, nil
 		}
-		return true, nil
+		// retry in all other cases, decrease log spam
+		if time.Since(lap) > (2 * time.Second) {
+			if err != nil {
+				klog.Warningf("error getting node %q condition %q status (will retry): %v", name, condition, err)
+			} else {
+				klog.Warningf("node %q has %q:%q status (will retry)", name, condition, status)
+			}
+			lap = time.Now()
+		}
+		return false, nil
 	}
-	if err := wait.PollImmediate(kconst.APICallRetryInterval, kconst.DefaultControlPlaneTimeout, checkReady); err != nil {
-		return errors.Wrapf(err, "wait node ready")
+	if err := wait.PollUntilContextCancel(ctx, kconst.APICallRetryInterval, true, checkCondition); err != nil {
+		return fmt.Errorf("WaitNodeCondition: %w", err)
 	}
+
 	return nil
+}
+
+// nodeConditionStatus checks if node exists and returns condition status.
+func nodeConditionStatus(ctx context.Context, cs *kubernetes.Clientset, name string, condition core.NodeConditionType) (core.ConditionStatus, error) {
+	node, err := cs.CoreV1().Nodes().Get(ctx, name, meta.GetOptions{})
+	if err != nil {
+		return core.ConditionUnknown, err
+	}
+	// check if node has the condition
+	for _, c := range node.Status.Conditions {
+		if c.Type == condition {
+			return c.Status, nil
+		}
+	}
+	// assume transient error
+	return core.ConditionUnknown, fmt.Errorf("node %q does not have %q condition type: %+v", name, condition, node.Status)
 }

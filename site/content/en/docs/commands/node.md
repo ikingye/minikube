@@ -5,7 +5,6 @@ description: >
 ---
 
 
-
 ## minikube node
 
 Add, remove, or list additional nodes
@@ -14,28 +13,34 @@ Add, remove, or list additional nodes
 
 Operations on nodes
 
-```
+```shell
 minikube node [flags]
-```
-
-### Options
-
-```
-  -h, --help   help for node
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
-  -b, --bootstrapper string              The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
-      --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --logtostderr                      log to standard error instead of files
-  -p, --profile string                   The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
-  -v, --v Level                          log level for V logs
-      --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
+      --add_dir_header                      If true, adds the file directory to the header of the log messages
+      --alsologtostderr                     log to standard error as well as files (no effect when -logtostderr=true)
+      --alsologtostderrthreshold severity   logs at or above this threshold go to stderr when -alsologtostderr=true (no effect when -logtostderr=true)
+  -b, --bootstrapper string                 The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
+  -h, --help                                
+      --legacy_stderr_threshold_behavior    If true, stderrthreshold is ignored when logtostderr=true (legacy behavior). If false, stderrthreshold is honored even when logtostderr=true (default true)
+      --log_backtrace_at traceLocation      when logging hits line file:N, emit a stack trace (default :0)
+      --log_dir string                      If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                     If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint              Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --logtostderr                         log to standard error instead of files (default true)
+      --one_output                          If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
+  -p, --profile string                      The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
+      --rootless                            Force to use rootless driver (docker and podman driver only)
+      --skip-audit                          Skip recording the current command in the audit logs.
+      --skip_headers                        If true, avoid header prefixes in the log messages
+      --skip_log_headers                    If true, avoid headers when opening log files (no effect when -logtostderr=true)
+      --stderrthreshold severity            logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=true unless -legacy_stderr_threshold_behavior=false) (default 2)
+      --user string                         Specifies the user executing the operation. Useful for auditing operations executed by 3rd party tools. Defaults to the operating system username.
+  -v, --v Level                             number for the log level verbosity
+      --vmodule moduleSpec                  comma-separated list of pattern=N settings for file-filtered logging
 ```
 
 ## minikube node add
@@ -46,31 +51,42 @@ Adds a node to the given cluster.
 
 Adds a node to the given cluster config, and starts it.
 
-```
+```shell
 minikube node add [flags]
 ```
 
 ### Options
 
 ```
-      --control-plane       If true, the node added will also be a control plane in addition to a worker.
+      --control-plane       If set, added node will become a control-plane. Defaults to false. Currently only supported for existing HA (multi-control plane) clusters.
       --delete-on-failure   If set, delete the current cluster if start fails and try again. Defaults to false.
-  -h, --help                help for add
-      --worker              If true, the added node will be marked for work. Defaults to true. (default true)
+      --worker              If set, added node will be available as worker. Defaults to true. (default true)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
-  -b, --bootstrapper string              The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
-      --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --logtostderr                      log to standard error instead of files
-  -p, --profile string                   The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
-  -v, --v Level                          log level for V logs
-      --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
+      --add_dir_header                      If true, adds the file directory to the header of the log messages
+      --alsologtostderr                     log to standard error as well as files (no effect when -logtostderr=true)
+      --alsologtostderrthreshold severity   logs at or above this threshold go to stderr when -alsologtostderr=true (no effect when -logtostderr=true)
+  -b, --bootstrapper string                 The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
+  -h, --help                                
+      --legacy_stderr_threshold_behavior    If true, stderrthreshold is ignored when logtostderr=true (legacy behavior). If false, stderrthreshold is honored even when logtostderr=true (default true)
+      --log_backtrace_at traceLocation      when logging hits line file:N, emit a stack trace (default :0)
+      --log_dir string                      If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                     If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint              Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --logtostderr                         log to standard error instead of files (default true)
+      --one_output                          If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
+  -p, --profile string                      The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
+      --rootless                            Force to use rootless driver (docker and podman driver only)
+      --skip-audit                          Skip recording the current command in the audit logs.
+      --skip_headers                        If true, avoid header prefixes in the log messages
+      --skip_log_headers                    If true, avoid headers when opening log files (no effect when -logtostderr=true)
+      --stderrthreshold severity            logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=true unless -legacy_stderr_threshold_behavior=false) (default 2)
+      --user string                         Specifies the user executing the operation. Useful for auditing operations executed by 3rd party tools. Defaults to the operating system username.
+  -v, --v Level                             number for the log level verbosity
+      --vmodule moduleSpec                  comma-separated list of pattern=N settings for file-filtered logging
 ```
 
 ## minikube node delete
@@ -81,28 +97,40 @@ Deletes a node from a cluster.
 
 Deletes a node from a cluster.
 
-```
-minikube node delete [flags]
+```shell
+minikube node delete NODE_NAME [flags]
 ```
 
-### Options
+### Examples
 
 ```
-  -h, --help   help for delete
+minikube node delete m02
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
-  -b, --bootstrapper string              The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
-      --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --logtostderr                      log to standard error instead of files
-  -p, --profile string                   The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
-  -v, --v Level                          log level for V logs
-      --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
+      --add_dir_header                      If true, adds the file directory to the header of the log messages
+      --alsologtostderr                     log to standard error as well as files (no effect when -logtostderr=true)
+      --alsologtostderrthreshold severity   logs at or above this threshold go to stderr when -alsologtostderr=true (no effect when -logtostderr=true)
+  -b, --bootstrapper string                 The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
+  -h, --help                                
+      --legacy_stderr_threshold_behavior    If true, stderrthreshold is ignored when logtostderr=true (legacy behavior). If false, stderrthreshold is honored even when logtostderr=true (default true)
+      --log_backtrace_at traceLocation      when logging hits line file:N, emit a stack trace (default :0)
+      --log_dir string                      If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                     If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint              Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --logtostderr                         log to standard error instead of files (default true)
+      --one_output                          If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
+  -p, --profile string                      The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
+      --rootless                            Force to use rootless driver (docker and podman driver only)
+      --skip-audit                          Skip recording the current command in the audit logs.
+      --skip_headers                        If true, avoid header prefixes in the log messages
+      --skip_log_headers                    If true, avoid headers when opening log files (no effect when -logtostderr=true)
+      --stderrthreshold severity            logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=true unless -legacy_stderr_threshold_behavior=false) (default 2)
+      --user string                         Specifies the user executing the operation. Useful for auditing operations executed by 3rd party tools. Defaults to the operating system username.
+  -v, --v Level                             number for the log level verbosity
+      --vmodule moduleSpec                  comma-separated list of pattern=N settings for file-filtered logging
 ```
 
 ## minikube node help
@@ -114,28 +142,34 @@ Help about any command
 Help provides help for any command in the application.
 Simply type node help [path to command] for full details.
 
-```
+```shell
 minikube node help [command] [flags]
-```
-
-### Options
-
-```
-  -h, --help   help for help
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
-  -b, --bootstrapper string              The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
-      --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --logtostderr                      log to standard error instead of files
-  -p, --profile string                   The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
-  -v, --v Level                          log level for V logs
-      --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
+      --add_dir_header                      If true, adds the file directory to the header of the log messages
+      --alsologtostderr                     log to standard error as well as files (no effect when -logtostderr=true)
+      --alsologtostderrthreshold severity   logs at or above this threshold go to stderr when -alsologtostderr=true (no effect when -logtostderr=true)
+  -b, --bootstrapper string                 The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
+  -h, --help                                
+      --legacy_stderr_threshold_behavior    If true, stderrthreshold is ignored when logtostderr=true (legacy behavior). If false, stderrthreshold is honored even when logtostderr=true (default true)
+      --log_backtrace_at traceLocation      when logging hits line file:N, emit a stack trace (default :0)
+      --log_dir string                      If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                     If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint              Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --logtostderr                         log to standard error instead of files (default true)
+      --one_output                          If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
+  -p, --profile string                      The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
+      --rootless                            Force to use rootless driver (docker and podman driver only)
+      --skip-audit                          Skip recording the current command in the audit logs.
+      --skip_headers                        If true, avoid header prefixes in the log messages
+      --skip_log_headers                    If true, avoid headers when opening log files (no effect when -logtostderr=true)
+      --stderrthreshold severity            logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=true unless -legacy_stderr_threshold_behavior=false) (default 2)
+      --user string                         Specifies the user executing the operation. Useful for auditing operations executed by 3rd party tools. Defaults to the operating system username.
+  -v, --v Level                             number for the log level verbosity
+      --vmodule moduleSpec                  comma-separated list of pattern=N settings for file-filtered logging
 ```
 
 ## minikube node list
@@ -146,28 +180,34 @@ List nodes.
 
 List existing minikube nodes.
 
-```
+```shell
 minikube node list [flags]
-```
-
-### Options
-
-```
-  -h, --help   help for list
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
-  -b, --bootstrapper string              The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
-      --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --logtostderr                      log to standard error instead of files
-  -p, --profile string                   The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
-  -v, --v Level                          log level for V logs
-      --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
+      --add_dir_header                      If true, adds the file directory to the header of the log messages
+      --alsologtostderr                     log to standard error as well as files (no effect when -logtostderr=true)
+      --alsologtostderrthreshold severity   logs at or above this threshold go to stderr when -alsologtostderr=true (no effect when -logtostderr=true)
+  -b, --bootstrapper string                 The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
+  -h, --help                                
+      --legacy_stderr_threshold_behavior    If true, stderrthreshold is ignored when logtostderr=true (legacy behavior). If false, stderrthreshold is honored even when logtostderr=true (default true)
+      --log_backtrace_at traceLocation      when logging hits line file:N, emit a stack trace (default :0)
+      --log_dir string                      If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                     If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint              Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --logtostderr                         log to standard error instead of files (default true)
+      --one_output                          If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
+  -p, --profile string                      The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
+      --rootless                            Force to use rootless driver (docker and podman driver only)
+      --skip-audit                          Skip recording the current command in the audit logs.
+      --skip_headers                        If true, avoid header prefixes in the log messages
+      --skip_log_headers                    If true, avoid headers when opening log files (no effect when -logtostderr=true)
+      --stderrthreshold severity            logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=true unless -legacy_stderr_threshold_behavior=false) (default 2)
+      --user string                         Specifies the user executing the operation. Useful for auditing operations executed by 3rd party tools. Defaults to the operating system username.
+  -v, --v Level                             number for the log level verbosity
+      --vmodule moduleSpec                  comma-separated list of pattern=N settings for file-filtered logging
 ```
 
 ## minikube node start
@@ -178,29 +218,46 @@ Starts a node.
 
 Starts an existing stopped node in a cluster.
 
+```shell
+minikube node start NODE_NAME [flags]
 ```
-minikube node start [flags]
+
+### Examples
+
+```
+minikube node start m02
 ```
 
 ### Options
 
 ```
       --delete-on-failure   If set, delete the current cluster if start fails and try again. Defaults to false.
-  -h, --help                help for start
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
-  -b, --bootstrapper string              The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
-      --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --logtostderr                      log to standard error instead of files
-  -p, --profile string                   The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
-  -v, --v Level                          log level for V logs
-      --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
+      --add_dir_header                      If true, adds the file directory to the header of the log messages
+      --alsologtostderr                     log to standard error as well as files (no effect when -logtostderr=true)
+      --alsologtostderrthreshold severity   logs at or above this threshold go to stderr when -alsologtostderr=true (no effect when -logtostderr=true)
+  -b, --bootstrapper string                 The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
+  -h, --help                                
+      --legacy_stderr_threshold_behavior    If true, stderrthreshold is ignored when logtostderr=true (legacy behavior). If false, stderrthreshold is honored even when logtostderr=true (default true)
+      --log_backtrace_at traceLocation      when logging hits line file:N, emit a stack trace (default :0)
+      --log_dir string                      If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                     If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint              Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --logtostderr                         log to standard error instead of files (default true)
+      --one_output                          If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
+  -p, --profile string                      The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
+      --rootless                            Force to use rootless driver (docker and podman driver only)
+      --skip-audit                          Skip recording the current command in the audit logs.
+      --skip_headers                        If true, avoid header prefixes in the log messages
+      --skip_log_headers                    If true, avoid headers when opening log files (no effect when -logtostderr=true)
+      --stderrthreshold severity            logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=true unless -legacy_stderr_threshold_behavior=false) (default 2)
+      --user string                         Specifies the user executing the operation. Useful for auditing operations executed by 3rd party tools. Defaults to the operating system username.
+  -v, --v Level                             number for the log level verbosity
+      --vmodule moduleSpec                  comma-separated list of pattern=N settings for file-filtered logging
 ```
 
 ## minikube node stop
@@ -211,27 +268,39 @@ Stops a node in a cluster.
 
 Stops a node in a cluster.
 
-```
-minikube node stop [flags]
+```shell
+minikube node stop NODE_NAME [flags]
 ```
 
-### Options
+### Examples
 
 ```
-  -h, --help   help for stop
+minikube node stop m02
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
-  -b, --bootstrapper string              The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
-      --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --logtostderr                      log to standard error instead of files
-  -p, --profile string                   The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
-  -v, --v Level                          log level for V logs
-      --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
+      --add_dir_header                      If true, adds the file directory to the header of the log messages
+      --alsologtostderr                     log to standard error as well as files (no effect when -logtostderr=true)
+      --alsologtostderrthreshold severity   logs at or above this threshold go to stderr when -alsologtostderr=true (no effect when -logtostderr=true)
+  -b, --bootstrapper string                 The name of the cluster bootstrapper that will set up the Kubernetes cluster. (default "kubeadm")
+  -h, --help                                
+      --legacy_stderr_threshold_behavior    If true, stderrthreshold is ignored when logtostderr=true (legacy behavior). If false, stderrthreshold is honored even when logtostderr=true (default true)
+      --log_backtrace_at traceLocation      when logging hits line file:N, emit a stack trace (default :0)
+      --log_dir string                      If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                     If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint              Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --logtostderr                         log to standard error instead of files (default true)
+      --one_output                          If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
+  -p, --profile string                      The name of the minikube VM being used. This can be set to allow having multiple instances of minikube independently. (default "minikube")
+      --rootless                            Force to use rootless driver (docker and podman driver only)
+      --skip-audit                          Skip recording the current command in the audit logs.
+      --skip_headers                        If true, avoid header prefixes in the log messages
+      --skip_log_headers                    If true, avoid headers when opening log files (no effect when -logtostderr=true)
+      --stderrthreshold severity            logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=true unless -legacy_stderr_threshold_behavior=false) (default 2)
+      --user string                         Specifies the user executing the operation. Useful for auditing operations executed by 3rd party tools. Defaults to the operating system username.
+  -v, --v Level                             number for the log level verbosity
+      --vmodule moduleSpec                  comma-separated list of pattern=N settings for file-filtered logging
 ```
 

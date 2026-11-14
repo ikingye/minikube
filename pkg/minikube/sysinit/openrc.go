@@ -20,13 +20,14 @@ package sysinit
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"html/template"
 	"os/exec"
 	"path"
 	"time"
 
-	"github.com/golang/glog"
-	"github.com/pkg/errors"
+	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/assets"
 	"k8s.io/minikube/pkg/minikube/vmpath"
 )
@@ -37,7 +38,7 @@ readonly UNIT_PATH=$1
 
 while true; do
   if [[ -f "${UNIT_PATH}" ]]; then
-	eval $(egrep "^ExecStart=" "${UNIT_PATH}" | cut -d"=" -f2-)
+	eval $(grep -E "^ExecStart=" "${UNIT_PATH}" | cut -d"=" -f2-)
   fi
   sleep 1
 done
@@ -107,32 +108,75 @@ func (s *OpenRC) Start(svc string) error {
 	defer cb()
 
 	rr, err := s.r.RunCmd(exec.CommandContext(ctx, "sudo", "service", svc, "start"))
-	glog.Infof("start output: %s", rr.Output())
-	return err
+	if err != nil {
+		return err
+	}
+	klog.Infof("start output: %s", rr.Output())
+	return nil
 }
 
 // Disable does nothing
-func (s *OpenRC) Disable(svc string) error {
+func (s *OpenRC) Disable(_ string) error {
+	return nil
+}
+
+func (s *OpenRC) ResetFailed(_ string) error {
+	return nil
+}
+
+// DisableNow does Disable + Stop
+func (s *OpenRC) DisableNow(svc string) error {
+	// supposed to do disable + stop
+	// disable does nothing for OpenRC, so just Stop here
+	return s.Stop(svc)
+}
+
+// Mask does nothing
+func (s *OpenRC) Mask(_ string) error {
 	return nil
 }
 
 // Enable does nothing
-func (s *OpenRC) Enable(svc string) error {
+func (s *OpenRC) Enable(_ string) error {
+	return nil
+}
+
+// EnableNow does Enable + Start
+func (s *OpenRC) EnableNow(svc string) error {
+	// supposed to do enable + start
+	// enable does nothing for OpenRC, so just Start here
+	return s.Start(svc)
+}
+
+// Unmask does nothing
+func (s *OpenRC) Unmask(_ string) error {
 	return nil
 }
 
 // Restart restarts a service
 func (s *OpenRC) Restart(svc string) error {
 	rr, err := s.r.RunCmd(exec.Command("sudo", "service", svc, "restart"))
-	glog.Infof("restart output: %s", rr.Output())
-	return err
+	if err != nil {
+		return err
+	}
+	klog.Infof("restart output: %s", rr.Output())
+	return nil
+}
+
+// Reload reloads a service
+// currently only used by our docker-env that doesn't need openrc implementation
+func (s *OpenRC) Reload(_ string) error {
+	return errors.New("reload is not implemented for OpenRC yet ! Please implement if needed")
 }
 
 // Stop stops a service
 func (s *OpenRC) Stop(svc string) error {
 	rr, err := s.r.RunCmd(exec.Command("sudo", "service", svc, "stop"))
-	glog.Infof("stop output: %s", rr.Output())
-	return err
+	if err != nil {
+		return err
+	}
+	klog.Infof("stop output: %s", rr.Output())
+	return nil
 }
 
 // ForceStop stops a service with prejuidice
@@ -158,7 +202,7 @@ func (s *OpenRC) GenerateInitShim(svc string, binary string, unit string) ([]ass
 
 	var b bytes.Buffer
 	if err := initScriptTmpl.Execute(&b, opts); err != nil {
-		return nil, errors.Wrap(err, "template execute")
+		return nil, fmt.Errorf("template execute: %w", err)
 	}
 
 	files := []assets.CopyableFile{

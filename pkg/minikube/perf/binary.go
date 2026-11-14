@@ -17,16 +17,20 @@ limitations under the License.
 package perf
 
 import (
+	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/pkg/errors"
+	"cloud.google.com/go/storage"
+	"google.golang.org/api/option"
 	"k8s.io/minikube/pkg/minikube/constants"
+	"k8s.io/minikube/pkg/util/retry"
 )
 
 // Binary holds a minikube binary
@@ -37,6 +41,7 @@ type Binary struct {
 
 const (
 	prPrefix = "pr://"
+	bucket   = "minikube-builds"
 )
 
 // NewBinary returns a new binary type
@@ -53,9 +58,43 @@ func NewBinary(b string) (*Binary, error) {
 // Name returns the name of the binary
 func (b *Binary) Name() string {
 	if b.pr != 0 {
-		return fmt.Sprintf("Minikube (PR %d)", b.pr)
+		return fmt.Sprintf("minikube (PR %d)", b.pr)
 	}
 	return filepath.Base(b.path)
+}
+
+func (b *Binary) download() error {
+	ctx := context.Background()
+	client, err := storage.NewClient(ctx, option.WithoutAuthentication())
+	if err != nil {
+		return fmt.Errorf("getting storage client: %w", err)
+	}
+	defer client.Close()
+
+	// first make sure object exists
+	obj := client.Bucket(bucket).Object(fmt.Sprintf("%d/minikube-%s-amd64", b.pr, runtime.GOOS))
+	if _, err := obj.Attrs(ctx); err != nil {
+		return fmt.Errorf("minikube binary for pr %v does not exist in bucket", b.pr)
+	}
+
+	rc, err := obj.NewReader(ctx)
+	if err != nil {
+		return fmt.Errorf("getting minikube object from gcs bucket: %w", err)
+	}
+	defer rc.Close()
+
+	if err := os.MkdirAll(filepath.Dir(b.path), 0777); err != nil {
+		return err
+	}
+
+	f, err := os.OpenFile(b.path, os.O_CREATE|os.O_RDWR, 0777)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(f, rc)
+	return err
 }
 
 // newBinaryFromPR downloads the minikube binary built for the pr by Jenkins from GCS
@@ -64,7 +103,7 @@ func newBinaryFromPR(pr string) (*Binary, error) {
 	// try to convert to int
 	i, err := strconv.Atoi(pr)
 	if err != nil {
-		return nil, errors.Wrapf(err, "converting %s to an integer", pr)
+		return nil, fmt.Errorf("converting %s to an integer: %w", pr, err)
 	}
 
 	b := &Binary{
@@ -72,38 +111,13 @@ func newBinaryFromPR(pr string) (*Binary, error) {
 		pr:   i,
 	}
 
-	if err := downloadBinary(remoteMinikubeURL(i), b.path); err != nil {
-		return nil, errors.Wrapf(err, "downloading minikube")
+	if err := retry.Expo(b.download, 1*time.Minute, 10*time.Minute); err != nil {
+		return nil, fmt.Errorf("downloading binary: %w", err)
 	}
 
 	return b, nil
 }
 
-func remoteMinikubeURL(pr int) string {
-	return fmt.Sprintf("https://storage.googleapis.com/minikube-builds/%d/minikube-linux-amd64", pr)
-}
-
 func localMinikubePath(pr int) string {
 	return fmt.Sprintf("%s/minikube-binaries/%d/minikube", constants.DefaultMinipath, pr)
-}
-
-func downloadBinary(url, path string) error {
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if err := os.MkdirAll(filepath.Dir(path), 0777); err != nil {
-		return err
-	}
-
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0777)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	_, err = io.Copy(f, resp.Body)
-	return err
 }
